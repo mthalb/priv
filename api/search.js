@@ -5,8 +5,9 @@ const cheerio = require('cheerio');
 const BASE_URL = 'https://www.xvideos.com';
 
 export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Cors', true);
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
+  // Allow CORS for frontend
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   if (req.method !== 'GET') {
@@ -19,54 +20,70 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Fetch search results page
-    const { data } = await axios.get(`${BASE_URL}/search/${encodeURIComponent(q)}/all/0`, {
-      headers: { 'User-Agent': 'Mozilla/5.0' }
+    // ✅ FIXED: Use the correct search URL
+    const searchUrl = `${BASE_URL}/search_video?keyword=${encodeURIComponent(q)}`;
+    
+    const { data } = await axios.get(searchUrl, {
+      headers: { 
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+      },
+      timeout: 10000 // 10 second timeout
     });
 
     const $ = cheerio.load(data);
     const videoLinks = [];
 
-    // Collect all video page URLs first
+    // Parse search results
     $('.thumb-box').each((i, el) => {
       const title = $(el).find('.title a').text().trim();
       const thumb = $(el).find('.thumb img').attr('data-src') || $(el).find('.thumb img').attr('src');
       const link = $(el).find('.title a').attr('href');
       const duration = $(el).find('.thumb-overlay .duration').text().trim();
       
-      if (link) {
+      if (link && !link.includes('ads')) {
         videoLinks.push({
           title,
-          thumb,
+          thumb: thumb || '/placeholder.jpg', // Fallback if no thumb
           duration,
           url: link.startsWith('http') ? link : `${BASE_URL}${link}`
         });
       }
     });
 
-    // 2. Fetch each video page in parallel for speed
+    // Fetch video pages in parallel for speed
     const promises = videoLinks.map(async (video) => {
       try {
         const { data: videoHtml } = await axios.get(video.url, {
-          headers: { 'User-Agent': 'Mozilla/5.0' }
+          headers: { 'User-Agent': 'Mozilla/5.0' },
+          timeout: 5000
         });
         const $video = cheerio.load(videoHtml);
         
-        // Look for HLS (m3u8) or Direct MP4
+        // Extract video source (MP4 or HLS)
+        let videoUrl = null;
+        
+        // Try HLS first
         const hlsSource = $video('video source').filter(function() {
            return $(this).attr('src') && $(this).attr('src').includes('.m3u8');
         }).attr('src');
 
-        const mp4Source = $video('video source').filter(function() {
-           return $(this).attr('src') && !$(this).attr('src').includes('.m3u8');
-        }).attr('src');
+        if (hlsSource) {
+          videoUrl = hlsSource.startsWith('http') ? hlsSource : `${BASE_URL}${hlsSource}`;
+        } else {
+          // Try MP4
+          const mp4Source = $video('video source').filter(function() {
+             return $(this).attr('src') && !$(this).attr('src').includes('.m3u8');
+          }).attr('src');
+          
+          if (mp4Source) {
+            videoUrl = mp4Source.startsWith('http') ? mp4Source : `${BASE_URL}${mp4Source}`;
+          }
+        }
 
-        const cleanUrl = hlsSource || mp4Source;
-        
-        if (cleanUrl) {
+        if (videoUrl) {
           return {
             title: video.title,
-            url: cleanUrl.startsWith('http') ? cleanUrl : `${BASE_URL}${cleanUrl}`,
+            url: videoUrl,
             thumb: video.thumb,
             duration: video.duration,
             type: hlsSource ? 'hls' : 'mp4',
@@ -74,7 +91,7 @@ export default async function handler(req, res) {
           };
         }
       } catch (err) {
-        console.error(`Failed to fetch ${video.url}:`, err.message);
+        // Silently fail for individual videos so one error doesn't break all
       }
       return null;
     });
@@ -83,7 +100,11 @@ export default async function handler(req, res) {
     res.json({ videos: results });
 
   } catch (error) {
-    console.error('Main Search Error:', error.message);
-    res.status(500).json({ error: 'Failed to search', details: error.message });
+    console.error('Search Error:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to search', 
+      details: error.message,
+      url: `${BASE_URL}/search_video?keyword=${encodeURIComponent(q)}`
+    });
   }
 }
