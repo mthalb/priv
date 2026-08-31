@@ -20,22 +20,23 @@ export default async function handler(req, res) {
   }
 
   try {
-    // ✅ FIXED: Use the correct search URL
-    const searchUrl = `${BASE_URL}/search_video?keyword=${encodeURIComponent(q)}`;
+    // ✅ Use the correct search URL: ?k=query
+    const searchUrl = `${BASE_URL}/?k=${encodeURIComponent(q)}`;
     
     const { data } = await axios.get(searchUrl, {
       headers: { 
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
       },
-      timeout: 10000 // 10 second timeout
+      timeout: 15000 // Increased timeout to 15s
     });
 
     const $ = cheerio.load(data);
     const videoLinks = [];
 
-    // Parse search results
+    // Parse search results based on the HTML structure of the search page
     $('.thumb-box').each((i, el) => {
       const title = $(el).find('.title a').text().trim();
+      // Get thumbnail image (lazy loading uses data-src)
       const thumb = $(el).find('.thumb img').attr('data-src') || $(el).find('.thumb img').attr('src');
       const link = $(el).find('.title a').attr('href');
       const duration = $(el).find('.thumb-overlay .duration').text().trim();
@@ -43,14 +44,14 @@ export default async function handler(req, res) {
       if (link && !link.includes('ads')) {
         videoLinks.push({
           title,
-          thumb: thumb || '/placeholder.jpg', // Fallback if no thumb
+          thumb: thumb || '/placeholder.jpg',
           duration,
           url: link.startsWith('http') ? link : `${BASE_URL}${link}`
         });
       }
     });
 
-    // Fetch video pages in parallel for speed
+    // Fetch video pages in parallel to extract the actual video source
     const promises = videoLinks.map(async (video) => {
       try {
         const { data: videoHtml } = await axios.get(video.url, {
@@ -59,10 +60,9 @@ export default async function handler(req, res) {
         });
         const $video = cheerio.load(videoHtml);
         
-        // Extract video source (MP4 or HLS)
         let videoUrl = null;
         
-        // Try HLS first
+        // Try HLS (m3u8) first
         const hlsSource = $video('video source').filter(function() {
            return $(this).attr('src') && $(this).attr('src').includes('.m3u8');
         }).attr('src');
@@ -91,7 +91,7 @@ export default async function handler(req, res) {
           };
         }
       } catch (err) {
-        // Silently fail for individual videos so one error doesn't break all
+        // Silently fail for individual videos
       }
       return null;
     });
@@ -104,7 +104,7 @@ export default async function handler(req, res) {
     res.status(500).json({ 
       error: 'Failed to search', 
       details: error.message,
-      url: `${BASE_URL}/search_video?keyword=${encodeURIComponent(q)}`
+      url: `${BASE_URL}/?k=${encodeURIComponent(q)}`
     });
   }
 }
