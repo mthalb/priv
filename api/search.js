@@ -1,11 +1,19 @@
-// api/search.js
-const axios = require('axios');
-const cheerio = require('cheerio');
+// pages/api/search.js
+import axios from 'axios';
+import cheerio from 'cheerio';
 
 const BASE_URL = 'https://www.xvideos.com';
 
+// Tags to search for to ensure we get 20+ results
+const SEARCH_TAGS = [
+  'popular',      // Broad search
+  'hot',          // Trending
+  'best',         // Top rated
+  'new',          // Newest
+  'recent'        // Recently added
+];
+
 export default async function handler(req, res) {
-  // Allow CORS for frontend
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -15,96 +23,131 @@ export default async function handler(req, res) {
   }
 
   const { q } = req.query;
-  if (!q) {
-    return res.status(400).json({ error: 'Missing search query' });
-  }
+  const query = q || 'popular';
 
   try {
-    // ✅ Use the correct search URL: ?k=query
-    const searchUrl = `${BASE_URL}/?k=${encodeURIComponent(q)}`;
+    // 1. Fetch search results for multiple tags to ensure volume
+    const searchPromises = SEARCH_TAGS.map(tag => 
+      fetchSearchResults(`${query} ${tag}`)
+    );
     
+    const allResults = (await Promise.all(searchPromises)).flat();
+    
+    // 2. Deduplicate by URL
+    const uniqueVideos = [...new Map(allResults.map(item => [item.url, item])).values()];
+    
+    // 3. Fetch actual video URLs from the video pages (up to 20)
+    const enrichedVideos = [];
+    for (const video of uniqueVideos) {
+      if (enrichedVideos.length >= 20) break;
+      
+      try {
+        const videoPageHtml = await fetchVideoPage(video.url);
+        const videoUrl = extractVideoUrl(videoPageHtml);
+        
+        if (videoUrl) {
+          enrichedVideos.push({
+            ...video,
+            videoUrl,
+            thumb: video.thumb || `${BASE_URL}${extractThumbnailFromPage(videoPageHtml)}`
+          });
+        }
+      } catch (err) {
+        // Silently skip if a specific video page fails
+      }
+    }
+
+    res.json({ videos: enrichedVideos });
+
+  } catch (error) {
+    console.error('Search Error:', error.message);
+    res.status(500).json({ error: 'Failed to search', details: error.message });
+  }
+}
+
+async function fetchSearchResults(query) {
+  try {
+    const searchUrl = `${BASE_URL}/?k=${encodeURIComponent(query)}`;
     const { data } = await axios.get(searchUrl, {
       headers: { 
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
       },
-      timeout: 15000 // Increased timeout to 15s
+      timeout: 15000
     });
 
     const $ = cheerio.load(data);
-    const videoLinks = [];
+    const results = [];
 
-    // Parse search results based on the HTML structure of the search page
     $('.thumb-box').each((i, el) => {
       const title = $(el).find('.title a').text().trim();
-      // Get thumbnail image (lazy loading uses data-src)
       const thumb = $(el).find('.thumb img').attr('data-src') || $(el).find('.thumb img').attr('src');
       const link = $(el).find('.title a').attr('href');
       const duration = $(el).find('.thumb-overlay .duration').text().trim();
       
       if (link && !link.includes('ads')) {
-        videoLinks.push({
-          title,
-          thumb: thumb || '/placeholder.jpg',
+        results.push({
+          title: title || 'Unknown',
+          thumb: thumb || '',
           duration,
           url: link.startsWith('http') ? link : `${BASE_URL}${link}`
         });
       }
     });
 
-    // Fetch video pages in parallel to extract the actual video source
-    const promises = videoLinks.map(async (video) => {
-      try {
-        const { data: videoHtml } = await axios.get(video.url, {
-          headers: { 'User-Agent': 'Mozilla/5.0' },
-          timeout: 5000
-        });
-        const $video = cheerio.load(videoHtml);
-        
-        let videoUrl = null;
-        
-        // Try HLS (m3u8) first
-        const hlsSource = $video('video source').filter(function() {
-           return $(this).attr('src') && $(this).attr('src').includes('.m3u8');
-        }).attr('src');
+    return results;
+  } catch (err) {
+    return [];
+  }
+}
 
-        if (hlsSource) {
-          videoUrl = hlsSource.startsWith('http') ? hlsSource : `${BASE_URL}${hlsSource}`;
-        } else {
-          // Try MP4
-          const mp4Source = $video('video source').filter(function() {
-             return $(this).attr('src') && !$(this).attr('src').includes('.m3u8');
-          }).attr('src');
-          
-          if (mp4Source) {
-            videoUrl = mp4Source.startsWith('http') ? mp4Source : `${BASE_URL}${mp4Source}`;
-          }
-        }
-
-        if (videoUrl) {
-          return {
-            title: video.title,
-            url: videoUrl,
-            thumb: video.thumb,
-            duration: video.duration,
-            type: hlsSource ? 'hls' : 'mp4',
-            externalLink: video.url
-          };
-        }
-      } catch (err) {
-        // Silently fail for individual videos
-      }
-      return null;
+async function fetchVideoPage(url) {
+  try {
+    const { data } = await axios.get(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      timeout: 10000
     });
+    return data;
+  } catch (err) {
+    return '';
+  }
+}
 
-    const results = (await Promise.all(promises)).filter(Boolean);
-    res.json({ videos: results });
+function extractVideoUrl(html) {
+  try {
+    const $ = cheerio.load(html);
+    
+    // Try HLS first
+    const hlsSource = $('video source').filter(function() {
+       return $(this).attr('src') && $(this).attr('src').includes('.m3u8');
+    }).attr('src');
 
-  } catch (error) {
-    console.error('Search Error:', error.message);
-    res.status(500).json({ 
-      error: 'Failed to search', 
-      details: error.message,
-      url: `${BASE_URL}/?k=${encodeURIComponent(q)}`
-    });
+    if (hlsSource) {
+      return hlsSource.startsWith('http') ? hlsSource : `${BASE_URL}${hlsSource}`;
+    }
+
+    // Try MP4
+    const mp4Source = $('video source').filter(function() {
+       return $(this).attr('src') && !$(this).attr('src').includes('.m3u8');
+    }).attr('src');
+    
+    if (mp4Source) {
+      return mp4Source.startsWith('http') ? mp4Source : `${BASE_URL}${mp4Source}`;
+    }
+
+    return null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function extractThumbnailFromPage(html) {
+  try {
+    const $ = cheerio.load(html);
+    const thumb = $('meta[property="og:image"]').attr('content') || 
+                  $('video').attr('poster') || 
+                  $('.bigThumb img').attr('data-src');
+    return thumb || '';
+  } catch (err) {
+    return '';
   }
 }
