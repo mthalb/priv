@@ -2,11 +2,9 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 
-// XVideos is relatively easy to scrape and allows direct video links
 const BASE_URL = 'https://www.xvideos.com';
 
 export default async function handler(req, res) {
-  // Enable CORS for your frontend
   res.setHeader('Access-Control-Allow-Cors', true);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -21,70 +19,71 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 1. Fetch the search page HTML
+    // 1. Fetch search results page
     const { data } = await axios.get(`${BASE_URL}/search/${encodeURIComponent(q)}/all/0`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
+      headers: { 'User-Agent': 'Mozilla/5.0' }
     });
 
     const $ = cheerio.load(data);
-    const videos = [];
+    const videoLinks = [];
 
-    // 2. Iterate through search results
+    // Collect all video page URLs first
     $('.thumb-box').each((i, el) => {
       const title = $(el).find('.title a').text().trim();
       const thumb = $(el).find('.thumb img').attr('data-src') || $(el).find('.thumb img').attr('src');
       const link = $(el).find('.title a').attr('href');
       const duration = $(el).find('.thumb-overlay .duration').text().trim();
-
-      // 3. Get the video page to find the direct URL
-      // We do this here for simplicity. For high scale, you'd fetch the video page separately.
-      const videoPageUrl = link.startsWith('http') ? link : `${BASE_URL}${link}`;
-
-      (async () => {
-        try {
-          const { data: videoHtml } = await axios.get(videoPageUrl, {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-          });
-          const $video = cheerio.load(videoHtml);
-          
-          // Extract HLS (.m3u8) or Direct MP4
-          // XVideos uses HLS for HD/4K
-          const hlsUrl = $video('video source').filter(function() {
-             return $(this).attr('src') && $(this).attr('src').includes('.m3u8');
-          }).attr('src');
-
-          const mp4Url = $video('video source').filter(function() {
-             return $(this).attr('src') && !$(this).attr('src').includes('.m3u8');
-          }).attr('src');
-
-          // Clean URLs
-          const cleanUrl = hlsUrl || mp4Url;
-          if (cleanUrl) {
-            videos.push({
-              title,
-              url: cleanUrl.startsWith('http') ? cleanUrl : `${BASE_URL}${cleanUrl}`,
-              thumb: thumb,
-              duration,
-              type: hlsUrl ? 'hls' : 'mp4',
-              externalLink: videoPageUrl
-            });
-          }
-        } catch (err) {
-          console.error(`Error fetching ${videoPageUrl}:`, err.message);
-        }
-      })();
+      
+      if (link) {
+        videoLinks.push({
+          title,
+          thumb,
+          duration,
+          url: link.startsWith('http') ? link : `${BASE_URL}${link}`
+        });
+      }
     });
 
-    // Wait a bit for async scraping to finish (simple approach for serverless)
-    // For better performance, use Promise.all with a concurrency limit
-    setTimeout(() => {
-      res.json({ videos });
-    }, 1000);
+    // 2. Fetch each video page in parallel for speed
+    const promises = videoLinks.map(async (video) => {
+      try {
+        const { data: videoHtml } = await axios.get(video.url, {
+          headers: { 'User-Agent': 'Mozilla/5.0' }
+        });
+        const $video = cheerio.load(videoHtml);
+        
+        // Look for HLS (m3u8) or Direct MP4
+        const hlsSource = $video('video source').filter(function() {
+           return $(this).attr('src') && $(this).attr('src').includes('.m3u8');
+        }).attr('src');
+
+        const mp4Source = $video('video source').filter(function() {
+           return $(this).attr('src') && !$(this).attr('src').includes('.m3u8');
+        }).attr('src');
+
+        const cleanUrl = hlsSource || mp4Source;
+        
+        if (cleanUrl) {
+          return {
+            title: video.title,
+            url: cleanUrl.startsWith('http') ? cleanUrl : `${BASE_URL}${cleanUrl}`,
+            thumb: video.thumb,
+            duration: video.duration,
+            type: hlsSource ? 'hls' : 'mp4',
+            externalLink: video.url
+          };
+        }
+      } catch (err) {
+        console.error(`Failed to fetch ${video.url}:`, err.message);
+      }
+      return null;
+    });
+
+    const results = (await Promise.all(promises)).filter(Boolean);
+    res.json({ videos: results });
 
   } catch (error) {
-    console.error('Search Error:', error.message);
-    res.status(500).json({ error: 'Failed to search' });
+    console.error('Main Search Error:', error.message);
+    res.status(500).json({ error: 'Failed to search', details: error.message });
   }
 }
