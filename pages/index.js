@@ -1,184 +1,235 @@
-// pages/index.js
-import React, { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import Head from 'next/head';
-import HLS from 'hls.js';
+import axios from 'axios';
+
+// Styles can be in a separate CSS file, but keeping it inline for simplicity in this single file
+// For a repo, move the CSS below to pages/globals.css and import it here.
+
+const styles = {
+  container: {
+    minHeight: '100vh',
+    backgroundColor: '#121212',
+    color: '#e0e0e0',
+    fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  },
+  header: {
+    position: 'sticky',
+    top: 0,
+    backgroundColor: '#2c2c2c',
+    padding: '1rem',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    boxShadow: '0 2px 5px rgba(0,0,0,0.5)',
+    zIndex: 1000,
+  },
+  input: {
+    padding: '10px',
+    fontSize: '16px',
+    border: '1px solid #444',
+    borderRadius: '4px',
+    backgroundColor: '#333',
+    color: 'white',
+    width: '300px',
+    marginRight: '10px',
+  },
+  button: {
+    padding: '10px 20px',
+    fontSize: '16px',
+    backgroundColor: '#bb86fc',
+    border: 'none',
+    borderRadius: '4px',
+    cursor: 'pointer',
+    color: '#000',
+    fontWeight: 'bold',
+  },
+  grid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
+    gap: '15px',
+    padding: '20px',
+  },
+  card: {
+    backgroundColor: '#1e1e1e',
+    borderRadius: '8px',
+    overflow: 'hidden',
+    position: 'relative',
+    transition: 'transform 0.2s',
+    aspectRatio: '1 / 1',
+    cursor: 'pointer',
+  },
+  cardHover: {
+    transform: 'scale(1.03)',
+    zIndex: 10,
+  },
+  img: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    display: 'block',
+  },
+  loader: {
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: '20px',
+    fontSize: '20px',
+    color: '#bb86fc',
+  },
+  error: {
+    textAlign: 'center',
+    color: '#ff6b6b',
+    padding: '20px',
+  },
+};
 
 export default function Home() {
-  const [videos, setVideos] = useState([]);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [selectedVideo, setSelectedVideo] = useState(null);
-  const videoRef = useRef(null);
-  const hlsRef = useRef(null);
+  const [error, setError] = useState('');
+  const [hoveredId, setHoveredId] = useState(null);
 
-  const search = async () => {
-    if (!searchTerm) return;
+  const handleSearch = async (e) => {
+    e.preventDefault();
+    if (!query.trim()) return;
+
     setLoading(true);
+    setError('');
+    setResults([]);
+
     try {
-      const res = await fetch(`/api/search?q=${encodeURIComponent(searchTerm)}`);
-      const data = await res.json();
-      setVideos(data.videos);
-    } catch (error) {
-      console.error('Search failed:', error);
+      // Call the internal API route
+      const response = await axios.post('/api/search', { query });
+      
+      // Filter out invalid items
+      const validItems = response.data.items.filter(item => 
+        item.links || item.content
+      );
+
+      setResults(validItems);
+    } catch (err) {
+      setError('Failed to fetch results. Please try again.');
+      console.error(err);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  const handlePlay = (video) => {
-    setSelectedVideo(video);
-    // Reset HLS instance if it exists
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-    }
-    
-    // Small delay to allow DOM to update
-    setTimeout(() => {
-      const videoElement = videoRef.current;
-      if (!videoElement) return;
-
-      if (HLS.isSupported() && video.videoUrl.includes('.m3u8')) {
-        const hls = new HLS();
-        hls.loadSource(video.videoUrl);
-        hls.attachMedia(videoElement);
-        hls.on(HLS.Events.MANIFEST_PARSED, () => {
-          videoElement.play();
-        });
-        hlsRef.current = hls;
-      } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-        // Safari native HLS
-        videoElement.src = video.videoUrl;
-        videoElement.addEventListener('loadedmetadata', () => {
-          videoElement.play();
-        });
-      } else {
-        // Fallback to direct MP4
-        videoElement.src = video.videoUrl;
-        videoElement.play();
-      }
-    }, 100);
-  };
-
-  const stopPlayer = () => {
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
-    }
-    setSelectedVideo(null);
+  const handleCardClick = (url) => {
+    window.open(url, '_blank');
   };
 
   return (
-    <div style={{ minHeight: '100vh', backgroundColor: '#121212', color: '#fff', fontFamily: 'sans-serif' }}>
+    <div style={styles.container}>
       <Head>
-        <title>NSFW Video Aggregator</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>NSFW Aggregator</title>
+        <meta name="description" content="Search and view NSFW content" />
       </Head>
 
-      {/* Header */}
-      <header style={{
-        position: 'sticky', top: 0, zIndex: 100,
-        background: '#1e1e1e', padding: '1rem',
-        display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px',
-        boxShadow: '0 2px 5px rgba(0,0,0,0.5)'
-      }}>
-        <input
-          type="text"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && search()}
-          placeholder="Search NSFW videos..."
-          style={{
-            padding: '10px', fontSize: '16px', border: '1px solid #444',
-            borderRadius: '4px', background: '#333', color: '#fff', width: '300px'
-          }}
-        />
-        <button
-          onClick={search}
-          style={{
-            padding: '10px 20px', fontSize: '16px', background: '#bb86fc',
-            border: 'none', borderRadius: '4px', cursor: 'pointer', color: '#000', fontWeight: 'bold'
-          }}
-        >
-          Search
-        </button>
+      <header style={styles.header}>
+        <form onSubmit={handleSearch} style={{ display: 'flex' }}>
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search NSFW (e.g., nsfw, anime, etc.)"
+            style={styles.input}
+          />
+          <button type="submit" style={styles.button}>
+            Search
+          </button>
+        </form>
       </header>
 
-      {/* Video Player Modal */}
-      {selectedVideo && (
-        <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.95)', zIndex: 1000,
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center'
-        }}>
-          <div style={{ width: '90%', maxWidth: '800px', position: 'relative' }}>
-            <button
-              onClick={stopPlayer}
-              style={{
-                position: 'absolute', top: '-30px', right: '0',
-                background: 'red', color: '#fff', border: 'none',
-                padding: '5px 10px', cursor: 'pointer', borderRadius: '4px'
-              }}
-            >
-              Close
-            </button>
-            <video
-              ref={videoRef}
-              controls
-              autoPlay
-              style={{ width: '100%', aspectRatio: '16/9', background: '#000' }}
-            />
-            <h3 style={{ marginTop: '10px', textAlign: 'center' }}>{selectedVideo.title}</h3>
-          </div>
+      {loading && <div style={styles.loader}>Loading...</div>}
+      
+      {error && <div style={styles.error}>{error}</div>}
+
+      {!loading && results.length > 0 && (
+        <div style={styles.grid}>
+          {results.map((item, index) => {
+            // Helper to extract media URL
+            let mediaUrl = null;
+            let mediaType = 'image'; // default
+
+            // Check links for image/video
+            if (item.links) {
+              const imgLink = item.links.find(l => 
+                l.href && /\.(jpg|jpeg|png|gif|webp)$/i.test(l.href)
+              );
+              const videoLink = item.links.find(l => 
+                l.href && /\.(mp4|webm|mov)$/i.test(l.href)
+              );
+
+              if (videoLink) {
+                mediaUrl = videoLink.href;
+                mediaType = 'video';
+              } else if (imgLink) {
+                mediaUrl = imgLink.href;
+                mediaType = 'image';
+              }
+            }
+
+            // Fallback: Try to extract image from content (HTML string)
+            if (!mediaUrl && item.content) {
+              try {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(item.content, 'text/html');
+                const img = doc.querySelector('img');
+                if (img) {
+                  mediaUrl = img.src || img.dataset.src;
+                  mediaType = 'image';
+                }
+              } catch (e) {
+                // ignore parse errors
+              }
+            }
+
+            // Skip items with no media
+            if (!mediaUrl) return null;
+
+            const cardStyle = {
+              ...styles.card,
+              ...(hoveredId === index ? styles.cardHover : {}),
+            };
+
+            return (
+              <div
+                key={index}
+                style={cardStyle}
+                onClick={() => handleCardClick(item.url || item.link)}
+                onMouseEnter={() => setHoveredId(index)}
+                onMouseLeave={() => setHoveredId(null)}
+              >
+                {mediaType === 'image' ? (
+                  <img 
+                    src={mediaUrl} 
+                    alt={item.title || 'Content'} 
+                    style={styles.img}
+                    loading="lazy"
+                  />
+                ) : (
+                  <video
+                    src={mediaUrl}
+                    muted
+                    loop
+                    autoPlay
+                    playsInline
+                    style={styles.img}
+                  />
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
-      {/* Main Content */}
-      <main style={{ padding: '20px' }}>
-        {loading && <p style={{ textAlign: 'center' }}>Loading videos...</p>}
-        
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
-          gap: '15px'
-        }}>
-          {videos.map((video, index) => (
-            <div
-              key={`${video.url}-${index}`}
-              onClick={() => handlePlay(video)}
-              style={{
-                position: 'relative', aspectRatio: '16/9',
-                borderRadius: '8px', overflow: 'hidden', cursor: 'pointer',
-                backgroundColor: '#1e1e1e', transition: 'transform 0.2s'
-              }}
-              onMouseOver={(e) => e.currentTarget.style.transform = 'scale(1.05)'}
-              onMouseOut={(e) => e.currentTarget.style.transform = 'scale(1)'}
-            >
-              <img
-                src={video.thumb}
-                alt={video.title}
-                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-              />
-              <div style={{
-                position: 'absolute', bottom: '5px', right: '5px',
-                background: 'rgba(0,0,0,0.7)', color: '#fff',
-                padding: '2px 5px', fontSize: '12px', borderRadius: '4px'
-              }}>
-                {video.duration}
-              </div>
-              <div style={{
-                position: 'absolute', bottom: '0', left: '0', right: '0',
-                background: 'linear-gradient(transparent, rgba(0,0,0,0.8))',
-                padding: '20px 10px 10px', fontSize: '14px'
-              }}>
-                {video.title}
-              </div>
-            </div>
-          ))}
+      {!loading && results.length === 0 && !error && query && (
+        <div style={{ textAlign: 'center', padding: '20px', color: '#888' }}>
+          No results found.
         </div>
-
-        {videos.length === 0 && !loading && (
-          <p style={{ textAlign: 'center', color: '#666' }}>Search for a term to see videos.</p>
-        )}
-      </main>
+      )}
     </div>
   );
 }
